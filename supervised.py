@@ -7,14 +7,15 @@ sortie   : output/supervised.png
 
 import time
 import warnings
+import joblib
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from sklearn.preprocessing import StandardScaler
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split, cross_val_score, learning_curve
 from sklearn.metrics import (
     confusion_matrix, ConfusionMatrixDisplay,
-    f1_score, accuracy_score,
+    f1_score, accuracy_score, classification_report,
 )
 from sklearn.linear_model import LogisticRegression
 from sklearn.neighbors import KNeighborsClassifier
@@ -193,3 +194,80 @@ print(f"{'classifieur':28s}  {'accuracy':>9s}  {'F1 macro':>9s}  {'temps':>8s}")
 print("-" * 62)
 for _, row in res_sorted.iterrows():
     print(f"{row['name']:28s}  {row['accuracy']:9.3f}  {row['f1_macro']:9.3f}  {row['time']:7.2f}s")
+
+# ── sauvegarde du meilleur modèle (Random Forest) ────────────────────────
+print("\nvalidation approfondie — Random Forest (meilleur modèle)...")
+rf_best = RandomForestClassifier(n_estimators=200, random_state=42, n_jobs=-1)
+rf_best.fit(X_train_s, y_train)
+y_pred_rf = rf_best.predict(X_test_s)
+
+print("\nrapport de classification :")
+print(classification_report(y_test, y_pred_rf, target_names=SEV_ORDER, zero_division=0))
+
+cv_scores = cross_val_score(rf_best, scaler.transform(X), y, cv=5, scoring="f1_macro", n_jobs=-1)
+print(f"cross-validation 5-fold F1 macro : {cv_scores.mean():.3f} ± {cv_scores.std():.3f}")
+
+joblib.dump({"model": rf_best, "scaler": scaler, "features": FEATURES}, "output/rf_model.pkl")
+print("modèle sauvegardé : output/rf_model.pkl")
+
+# ── figure validation approfondie ────────────────────────────────────────
+
+fig2, axes2 = plt.subplots(1, 3, figsize=(18, 5), facecolor="#f5f5f5")
+fig2.suptitle("validation Random Forest — sévérité CVE ANSSI", fontsize=12, fontweight="bold")
+
+train_sizes, train_scores, val_scores = learning_curve(
+    RandomForestClassifier(n_estimators=100, random_state=42, n_jobs=-1),
+    scaler.transform(X), y, cv=5, scoring="f1_macro",
+    train_sizes=np.linspace(0.1, 1.0, 8), n_jobs=-1
+)
+ax_lc = axes2[0]
+ax_lc.plot(train_sizes, train_scores.mean(axis=1), "o-", color="#4c72b0", label="train")
+ax_lc.fill_between(train_sizes, train_scores.mean(1) - train_scores.std(1),
+                    train_scores.mean(1) + train_scores.std(1), alpha=0.15, color="#4c72b0")
+ax_lc.plot(train_sizes, val_scores.mean(axis=1), "o-", color="#dd8452", label="validation")
+ax_lc.fill_between(train_sizes, val_scores.mean(1) - val_scores.std(1),
+                    val_scores.mean(1) + val_scores.std(1), alpha=0.15, color="#dd8452")
+ax_lc.set_title("courbe d'apprentissage (F1 macro)", fontweight="bold")
+ax_lc.set_xlabel("taille du jeu d'entraînement")
+ax_lc.set_ylabel("F1 macro")
+ax_lc.legend(fontsize=9)
+ax_lc.set_facecolor("#fafafa")
+ax_lc.spines[["top", "right"]].set_visible(False)
+
+# distribution des prédictions vs réalité
+ax_dist = axes2[1]
+sev_colors = ["#2ca02c", "#f7c948", "#ff7f0e", "#d62728"]
+x_pos = np.arange(len(SEV_ORDER))
+width = 0.35
+real_counts = [int((y_test == s).sum()) for s in SEV_ORDER]
+pred_counts = [int((y_pred_rf == s).sum()) for s in SEV_ORDER]
+ax_dist.bar(x_pos - width/2, real_counts, width, label="réel",    color=sev_colors, alpha=0.6)
+ax_dist.bar(x_pos + width/2, pred_counts, width, label="prédit",  color=sev_colors, alpha=1.0)
+ax_dist.set_xticks(x_pos)
+ax_dist.set_xticklabels(SEV_ORDER, fontsize=9)
+ax_dist.set_title("distribution réel vs prédit (test)", fontweight="bold")
+ax_dist.set_ylabel("nb de CVE")
+ax_dist.legend(fontsize=9)
+ax_dist.set_facecolor("#fafafa")
+ax_dist.spines[["top", "right"]].set_visible(False)
+
+# scores CV par fold
+ax_cv = axes2[2]
+ax_cv.bar(np.arange(1, 6), cv_scores, color="#4c72b0", alpha=0.8)
+ax_cv.axhline(cv_scores.mean(), color="#d62728", linestyle="--", linewidth=1.5,
+              label=f"moyenne : {cv_scores.mean():.3f}")
+ax_cv.set_title("F1 macro par fold (cross-validation 5-fold)", fontweight="bold")
+ax_cv.set_xlabel("fold")
+ax_cv.set_ylabel("F1 macro")
+ax_cv.set_xticks(np.arange(1, 6))
+ax_cv.legend(fontsize=9)
+ax_cv.set_ylim(0, 1)
+ax_cv.set_facecolor("#fafafa")
+ax_cv.spines[["top", "right"]].set_visible(False)
+for i, v in enumerate(cv_scores):
+    ax_cv.text(i + 1, v + 0.01, f"{v:.3f}", ha="center", fontsize=8)
+
+plt.tight_layout()
+out2 = "output/supervised_validation.png"
+plt.savefig(out2, dpi=150, bbox_inches="tight")
+print(f"sauvegardé : {out2}")

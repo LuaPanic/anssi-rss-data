@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import silhouette_score, davies_bouldin_score
 from sklearn.decomposition import PCA
 from sklearn.cluster import (
     MiniBatchKMeans, AffinityPropagation, MeanShift, estimate_bandwidth,
@@ -126,3 +127,90 @@ plt.tight_layout()
 out = "output/clustering.png"
 plt.savefig(out, dpi=150, bbox_inches="tight")
 print(f"sauvegardé : {out}")
+
+
+
+hdb = HDBSCAN(min_cluster_size=30)
+labels_hdb = hdb.fit_predict(X_scaled)
+n_clusters_hdb = len(set(labels_hdb) - {-1})
+n_noise_hdb    = int((labels_hdb == -1).sum())
+
+# métriques (hors bruit)
+mask_valid = labels_hdb != -1
+sil = silhouette_score(X_scaled[mask_valid], labels_hdb[mask_valid]) if mask_valid.sum() > 1 else float("nan")
+dbi = davies_bouldin_score(X_scaled[mask_valid], labels_hdb[mask_valid]) if mask_valid.sum() > 1 else float("nan")
+print(f"  clusters : {n_clusters_hdb}  |  bruit : {n_noise_hdb}  |  silhouette : {sil:.3f}  |  Davies-Bouldin : {dbi:.3f}")
+
+# profil moyen par cluster
+df_hdb = df_clean.copy()
+df_hdb["cluster"] = labels_hdb
+df_hdb_clean = df_hdb[df_hdb["cluster"] != -1]
+
+profils = df_hdb_clean.groupby("cluster")[["cvss", "log_epss", "epss_percentile", "nb_documents", "sev_num"]].mean()
+print("\nprofil moyen par cluster :")
+print(profils.round(3).to_string())
+
+# -----------------------------------------------------------------------
+# figure analyse HDBSCAN
+# -----------------------------------------------------------------------
+fig2, axes2 = plt.subplots(1, 3, figsize=(18, 5), facecolor="#f5f5f5")
+fig2.suptitle(
+    f"analyse HDBSCAN — CVE ANSSI  |  {n_clusters_hdb} clusters  |  "
+    f"silhouette={sil:.3f}  Davies-Bouldin={dbi:.3f}\n"
+    f"bruit (outliers) : {n_noise_hdb} CVE ({n_noise_hdb/len(labels_hdb):.1%})",
+    fontsize=11, fontweight="bold", y=1.02
+)
+
+CLUSTER_COLORS = plt.cm.tab10
+
+# -- scatter PCA coloré par cluster --
+ax_sc = axes2[0]
+for cl in sorted(set(labels_hdb)):
+    mask = labels_hdb == cl
+    color = "#111111" if cl == -1 else CLUSTER_COLORS(cl % 10)
+    label = "bruit (outliers)" if cl == -1 else f"cluster {cl}"
+    ax_sc.scatter(X_2d[mask, 0], X_2d[mask, 1], c=[color], s=6, alpha=0.5,
+                  linewidths=0, label=label)
+ax_sc.set_title("clusters HDBSCAN (PCA 2D)", fontweight="bold")
+ax_sc.set_xlabel(f"PC1 ({var[0]:.0%})")
+ax_sc.set_ylabel(f"PC2 ({var[1]:.0%})")
+ax_sc.legend(fontsize=7, markerscale=2)
+ax_sc.set_facecolor("#fafafa")
+ax_sc.spines[["top", "right"]].set_visible(False)
+
+# -- profil radar simplifié (barres groupées) --
+ax_pr = axes2[1]
+feat_labels = ["CVSS", "log(EPSS)", "percentile\nEPSS", "nb docs", "sévérité"]
+x = np.arange(len(feat_labels))
+width = 0.8 / max(n_clusters_hdb, 1)
+for i, (cl, row) in enumerate(profils.iterrows()):
+    vals = row.values
+    vals_norm = (vals - vals.min()) / (vals.max() - vals.min() + 1e-9)
+    ax_pr.bar(x + i * width, vals_norm, width=width,
+              color=CLUSTER_COLORS(cl % 10), alpha=0.8, label=f"cluster {cl}")
+ax_pr.set_xticks(x + width * (n_clusters_hdb - 1) / 2)
+ax_pr.set_xticklabels(feat_labels, fontsize=8)
+ax_pr.set_title("profil normalisé par cluster", fontweight="bold")
+ax_pr.set_ylabel("valeur normalisée [0-1]")
+ax_pr.legend(fontsize=7)
+ax_pr.set_facecolor("#fafafa")
+ax_pr.spines[["top", "right"]].set_visible(False)
+
+# -- taille des clusters --
+ax_sz = axes2[2]
+cluster_ids   = sorted(set(labels_hdb))
+cluster_sizes = [int((labels_hdb == cl).sum()) for cl in cluster_ids]
+cluster_names = ["bruit" if cl == -1 else f"cluster {cl}" for cl in cluster_ids]
+colors_sz     = ["#111111" if cl == -1 else CLUSTER_COLORS(cl % 10) for cl in cluster_ids]
+bars = ax_sz.bar(cluster_names, cluster_sizes, color=colors_sz, alpha=0.85)
+ax_sz.bar_label(bars, padding=3, fontsize=9)
+ax_sz.set_title("taille des clusters", fontweight="bold")
+ax_sz.set_ylabel("nb de CVE")
+ax_sz.set_facecolor("#fafafa")
+ax_sz.spines[["top", "right"]].set_visible(False)
+ax_sz.tick_params(axis="x", labelsize=8)
+
+plt.tight_layout()
+out2 = "output/clustering_hdbscan.png"
+plt.savefig(out2, dpi=150, bbox_inches="tight")
+print(f"sauvegardé : {out2}")
