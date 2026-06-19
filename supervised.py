@@ -1,6 +1,7 @@
 """
 classification supervisée — prédire la sévérité des CVE ANSSI
-features : log(epss), epss_percentile, nb_documents  (sans CVSS)
+features : log(epss), epss_percentile, nb_documents, exploitation,
+           has_cwe, is_alerte, annee_cve  (sans CVSS)
 cible    : severite (Faible / Moyenne / Élevée / Critique)
 sortie   : output/supervised.png
 """
@@ -47,8 +48,18 @@ SEV_LABELS = ["F",      "M",       "É",            "C"]          # abréviation
 df = df[df["severite"].isin(SEV_ORDER)].copy()
 df["log_epss"] = np.log1p(df["epss"])
 
+# exploitation : none=0, poc=1, active=2 — NaN = non confirmé → 0
+exploit_map = {"none": 0, "poc": 1, "PoC": 1, "active": 2, "Active": 2}
+df["exploit_num"] = df["exploitation"].map(exploit_map).fillna(0)
+
+df["has_cwe"]   = df["cwe"].notna().astype(int)
+df["is_alerte"] = df["type"].str.contains("Alerte", na=False).astype(int)
+df["annee_cve"] = pd.to_datetime(df["date_cve"], errors="coerce").dt.year
+df["annee_cve"] = df["annee_cve"].fillna(df["annee_cve"].median()).astype(int)
+
 # features sans CVSS (la sévérité en est une transformation directe)
-FEATURES = ["log_epss", "epss_percentile", "nb_documents"]
+FEATURES = ["log_epss", "epss_percentile", "nb_documents",
+            "exploit_num", "has_cwe", "is_alerte", "annee_cve"]
 df_clean = df[FEATURES + ["severite"]].dropna()
 
 print(f"  {len(df_clean)} CVE avec données complètes")
@@ -72,16 +83,16 @@ X_test_s  = scaler.transform(X_test)
 # classifieurs
 # ───────────────────────────────────────────────────────────────────────────
 classifiers = [
-    ("Régression\nLogistique",    LogisticRegression(max_iter=1000, random_state=42)),
+    ("Régression\nLogistique",    LogisticRegression(max_iter=1000, random_state=42, class_weight="balanced")),
     ("KNN\n(k=7)",                KNeighborsClassifier(n_neighbors=7)),
-    ("SVM\n(RBF)",                SVC(kernel="rbf", random_state=42)),
-    ("Arbre de\nDécision",        DecisionTreeClassifier(max_depth=6, random_state=42)),
-    ("Random\nForest",            RandomForestClassifier(n_estimators=200, random_state=42, n_jobs=-1)),
+    ("SVM\n(RBF)",                SVC(kernel="rbf", random_state=42, class_weight="balanced")),
+    ("Arbre de\nDécision",        DecisionTreeClassifier(max_depth=6, random_state=42, class_weight="balanced")),
+    ("Random\nForest",            RandomForestClassifier(n_estimators=200, random_state=42, n_jobs=-1, class_weight="balanced")),
     ("Gradient\nBoosting",        GradientBoostingClassifier(n_estimators=100, random_state=42)),
-    ("Extra\nTrees",              ExtraTreesClassifier(n_estimators=200, random_state=42, n_jobs=-1)),
+    ("Extra\nTrees",              ExtraTreesClassifier(n_estimators=200, random_state=42, n_jobs=-1, class_weight="balanced")),
     ("AdaBoost",                  AdaBoostClassifier(n_estimators=100, random_state=42)),
     ("Naive\nBayes",              GaussianNB()),
-    ("MLP\n(64-32)",               MLPClassifier(hidden_layer_sizes=(64, 32), max_iter=300, random_state=42)),
+    ("MLP\n(64-32)",              MLPClassifier(hidden_layer_sizes=(64, 32), max_iter=300, random_state=42)),
 ]
 
 # ───────────────────────────────────────────────────────────────────────────
@@ -101,8 +112,8 @@ for ax in axes_grid.flat:
 fig.suptitle(
     f"classification supervisée — sévérité CVE ANSSI"
     f"  (n={len(df_clean)}, test=25%)\n"
-    f"features : log(EPSS) · percentile EPSS · nb_documents   [CVSS exclu]",
-    fontsize=11, fontweight="bold", y=1.01,
+    f"features : log(EPSS) · percentile EPSS · nb_documents · exploitation · has_cwe · is_alerte · annee_cve   [CVSS exclu]",
+    fontsize=10, fontweight="bold", y=1.01,
 )
 
 results   = []
@@ -169,11 +180,12 @@ if rf_clf is not None:
     feat_ax.set_facecolor("#fafafa")
     feat_ax.spines[["top", "right"]].set_visible(False)
 
-    feat_names  = ["log(EPSS)", "percentile\nEPSS", "nb_\ndocuments"]
+    feat_names  = ["log(EPSS)", "percentile\nEPSS", "nb_\ndocuments",
+                   "exploitation", "has_cwe", "is_alerte", "annee_cve"]
     importances = rf_clf.feature_importances_
     idx         = np.argsort(importances)
-    feat_ax.barh(np.arange(len(idx)), importances[idx],
-                 color=["#55a868", "#4c72b0", "#dd8452"][:len(idx)], alpha=0.85)
+    colors = plt.cm.tab10(np.linspace(0, 0.7, len(idx)))
+    feat_ax.barh(np.arange(len(idx)), importances[idx], color=colors, alpha=0.85)
     feat_ax.set_yticks(np.arange(len(idx)))
     feat_ax.set_yticklabels([feat_names[i] for i in idx], fontsize=8)
     feat_ax.set_xlabel("Importance (Gini)", fontsize=8)
