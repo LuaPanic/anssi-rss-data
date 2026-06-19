@@ -3,3 +3,4 @@ output/
 data/
 data.zip
 .DS_Store
+.env
